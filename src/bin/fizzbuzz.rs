@@ -4,24 +4,24 @@ use std::io::{BufWriter, Write};
 fn main() -> io::Result<()> {
     let buf = unsafe { mmap_stdin() };
     let stdout = io::stdout();
-    let mut writer = BufWriter::new(stdout.lock());
+    let mut writer = BufWriter::with_capacity(64*1024, stdout.lock());
 
     for buffer in buf.chunks_exact(4) {
         let num = u32::from_le_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]);
-        //eprintln!("{}", num);
         let fizz = num % 3 == 0;
         let buzz = num % 5 == 0;
 
         if fizz {
-            writer.write_all(b"Fizz")?;
+            writer.write_all(b"Fizz").unwrap();
         }
         if buzz {
-            writer.write_all(b"Buzz")?;
+            writer.write_all(b"Buzz").unwrap();
         }
-        if !fizz && !buzz {
-            write!(writer, "{}", num)?;
+        if !fizz & !buzz {
+            write!(writer, "{}", num).unwrap();
         }
-        writer.write_all(b"\n")?;
+
+        writer.write_all(b"\n").unwrap();
     }
 
     Ok(())
@@ -32,6 +32,7 @@ fn main() -> io::Result<()> {
 #[link(name = "c")]
 extern {
     fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut u8;
+    fn madvise(addr: *mut u8, length: usize, advice: i32) -> i32;
     fn lseek(fd: i32, offset: i64, whence: i32) -> i64;
     fn open(path: *const u8, oflag: i32) -> i32;
 }
@@ -65,6 +66,16 @@ unsafe fn mmap_fd<'a>(fd: i32) -> &'a [u8] {
     let ptr = mmap(0 as _, size as usize, prot_read, map_private | map_populate, fd, 0);
     if ptr as isize == -1 {
         panic!("mmap failed, errno {}", std::io::Error::last_os_error().raw_os_error().unwrap());
+    }
+    let madv_sequential = 0x02;
+    let r = madvise(ptr, size as usize, madv_sequential);
+    if r == -1 {
+        panic!("madvise failed, errno {}", std::io::Error::last_os_error().raw_os_error().unwrap());
+    }
+    let madv_willneed = 0x03;
+    let r = madvise(ptr, size as usize, madv_willneed);
+    if r == -1 {
+        panic!("madvise failed, errno {}", std::io::Error::last_os_error().raw_os_error().unwrap());
     }
     std::slice::from_raw_parts(ptr, size as usize)
 }
