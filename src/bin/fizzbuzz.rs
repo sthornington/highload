@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::io;
 use std::io::{BufWriter, Write};
 
@@ -13,13 +12,13 @@ fn main() -> io::Result<()> {
         let fizz = num % 3 == 0;
         let buzz = num % 5 == 0;
 
-        if (fizz) {
+        if fizz {
             writer.write_all(b"Fizz")?;
         }
-        if (buzz) {
+        if buzz {
             writer.write_all(b"Buzz")?;
         }
-        if (!fizz && !buzz) {
+        if !fizz && !buzz {
             write!(writer, "{}", num)?;
         }
         writer.write_all(b"\n")?;

@@ -5,14 +5,6 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[[bin]]
-name = "fizzbuzz"
-path = "src/bin/fizzbuzz.rs"
-
-[[bin]]
-name = "fizzbuzz_wrap"
-path = "src/bin/fizzbuzz_wrap.rs"
-
 [dependencies]
 libc = "*"
 rand = "0.8.5"
