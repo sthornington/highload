@@ -54,15 +54,22 @@ unsafe fn mmap_path<'a>(path: &str) -> &'a [u8] {
     mmap_fd(fd)
 }
 
+#[cfg(target_os = "linux")]
+const MAP_POPULATE: i32 = 0x8000;
+
+#[cfg(target_os = "macos")]
+const MAP_POPULATE: i32 = 0x0000;
+
 unsafe fn mmap_fd<'a>(fd: i32) -> &'a [u8] {
     let seek_end = 2;
     let size = lseek(fd, 0, seek_end);
+    //eprintln!("size: {}\n", size);
     if size == -1 {
         panic!("lseek failed, errno {}", std::io::Error::last_os_error().raw_os_error().unwrap());
     }
     let prot_read = 0x01;
     let map_private = 0x02;
-    let map_populate = 0x08000;
+    let map_populate = MAP_POPULATE;
     let ptr = mmap(0 as _, size as usize, prot_read, map_private | map_populate, fd, 0);
     if ptr as isize == -1 {
         panic!("mmap failed, errno {}", std::io::Error::last_os_error().raw_os_error().unwrap());
