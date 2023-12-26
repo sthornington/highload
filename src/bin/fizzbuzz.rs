@@ -4,7 +4,7 @@ use std::io::{BufWriter, Write};
 fn main() -> io::Result<()> {
     let buf = unsafe { mmap_stdin() };
     let stdout = io::stdout();
-    let mut writer = BufWriter::with_capacity(64*1024, stdout.lock());
+    let mut writer = BufWriter::new(stdout.lock());
 
     for buffer in buf.chunks_exact(4) {
         let num = u32::from_le_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]);
