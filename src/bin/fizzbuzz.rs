@@ -1,21 +1,28 @@
 use std::borrow::Cow;
 use std::io;
+use std::io::{BufWriter, Write};
 
 fn main() -> io::Result<()> {
     let buf = unsafe { mmap_stdin() };
+    let stdout = io::stdout();
+    let mut writer = BufWriter::new(stdout.lock());
+
     for buffer in buf.chunks_exact(4) {
         let num = u32::from_le_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]);
         //eprintln!("{}", num);
         let fizz = num % 3 == 0;
         let buzz = num % 5 == 0;
 
-        let out: Cow<str> = match (fizz, buzz) {
-            (true, true) => "FizzBuzz".into(),
-            (true, false) => "Fizz".into(),
-            (false, true) => "Buzz".into(),
-            (false, false) => num.to_string().into(),
-        };
-        println!("{}", out);
+        if (fizz) {
+            writer.write_all(b"Fizz")?;
+        }
+        if (buzz) {
+            writer.write_all(b"Buzz")?;
+        }
+        if (!fizz && !buzz) {
+            write!(writer, "{}", num)?;
+        }
+        writer.write_all(b"\n")?;
     }
 
     Ok(())
