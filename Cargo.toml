@@ -9,5 +9,11 @@ edition = "2021"
 name = "fizzbuzz"
 path = "src/bin/fizzbuzz.rs"
 
+[[bin]]
+name = "fizzbuzz_wrap"
+path = "src/bin/fizzbuzz_wrap.rs"
+
 [dependencies]
+libc = "*"
+rand = "0.8.5"
 
