@@ -1,13 +1,36 @@
 use std::io;
 use std::io::{BufWriter, Write};
 
+fn format_int(mut num: u32, buf: &mut [u8; 10]) -> &[u8] {
+    let mut start = 0;
+
+    for (i, c) in buf.iter_mut().enumerate().rev() {
+        let (d, r) = (num / 10, num % 10);
+        *c = r as u8 + b'0';
+        num = d;
+        if num == 0 {
+            start = i;
+            break;
+        }
+    }
+    &buf[start..10]
+}
+
+fn write_int(num: u32, writer: &mut BufWriter<io::StdoutLock>) {
+    let mut buf = [0u8; 10];
+    let slice = format_int(num, &mut buf);
+    writer.write_all(slice).unwrap();
+}
+
+// TODO - REPLACE ALL BufWriter WITH CUSTOM ALIGNED HUGE PAGE BUFFER
+
 fn main() -> io::Result<()> {
     let buf = unsafe { mmap_stdin() };
     let stdout = io::stdout();
-    let mut writer = BufWriter::new(stdout.lock());
+    let mut writer = BufWriter::with_capacity(128*1024, stdout.lock());
 
-    for buffer in buf.chunks_exact(4) {
-        let num = u32::from_le_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]);
+    for buffer in buf.chunks_exact(4).map(|x| x.try_into().unwrap()) {
+        let num = u32::from_le_bytes(buffer);
         let fizz = num % 3 == 0;
         let buzz = num % 5 == 0;
 
@@ -18,13 +41,30 @@ fn main() -> io::Result<()> {
             writer.write_all(b"Buzz").unwrap();
         }
         if !fizz & !buzz {
-            write!(writer, "{}", num).unwrap();
+            write_int(num, &mut writer);
+            //write!(writer, "{}", num).unwrap();
         }
 
         writer.write_all(b"\n").unwrap();
     }
 
     Ok(())
+}
+
+#[test]
+fn test_format_int() {
+    let mut buf = [0u8; 10];
+    assert_eq!(format_int(0, &mut buf), b"0");
+    assert_eq!(format_int(1, &mut buf), b"1");
+    assert_eq!(format_int(10, &mut buf), b"10");
+    assert_eq!(format_int(100, &mut buf), b"100");
+    assert_eq!(format_int(1000, &mut buf), b"1000");
+    assert_eq!(format_int(10000, &mut buf), b"10000");
+    assert_eq!(format_int(100000, &mut buf), b"100000");
+    assert_eq!(format_int(1000000, &mut buf), b"1000000");
+    assert_eq!(format_int(10000000, &mut buf), b"10000000");
+    assert_eq!(format_int(100000000, &mut buf), b"100000000");
+    assert_eq!(format_int(1000000000, &mut buf), b"1000000000");
 }
 
 // SUPPORT CRAP
