@@ -1,8 +1,8 @@
 use std::io;
-use std::io::{BufWriter, Write};
+//use std::io::{BufWriter, Write};
+use std::io::{Write};
 use std::convert::TryInto;
 use std::ffi::CStr;
-use std::thread::sleep;
 
 struct HugePageBufferedWriter<W: Write> {
     buffer: *mut u8,
@@ -114,7 +114,7 @@ struct HugePageMMAPWriter {
 
 impl HugePageMMAPWriter  {
     fn new() -> io::Result<HugePageMMAPWriter> {
-        let mut buffer = unsafe { mmap_stdout() };
+        let buffer = unsafe { mmap_stdout() };
 
         Ok(HugePageMMAPWriter {
             buffer: buffer.as_mut_ptr(),
@@ -180,7 +180,7 @@ fn write_int(num: u32, writer: &mut impl Write) {
 
 fn main() -> io::Result<()> {
     let stdin_buf = unsafe { mmap_stdin() };
-    let stdout = io::stdout();
+    //let stdout = io::stdout();
     //let mut writer = BufWriter::with_capacity(128*1024, stdout.lock());
     //let mut writer = HugePageBufferedWriter::new(stdout.lock()).unwrap();
     let mut writer = HugePageMMAPWriter::new().unwrap();
@@ -303,7 +303,7 @@ fn get_stdout_path(path_buf: &mut [u8; 4096]) {
         path_buf[..bytes.len()].copy_from_slice(bytes);
         path_buf[bytes.len()] = 0;
 
-        let path = CStr::from_ptr(path_buf.as_ptr() as *const i8);
+        let path = CStr::from_ptr(path_buf.as_ptr());
         eprintln!("here {}", path.to_str().unwrap());
     }
 }
@@ -311,6 +311,7 @@ fn get_stdout_path(path_buf: &mut [u8; 4096]) {
 fn reopen_stdout_rw() {
     let mut path_buf = [0u8; 4096];
     unsafe {
+        let stdout = 1;
         get_stdout_path(&mut path_buf);
 
         let o_rdwr = 2;
@@ -354,7 +355,6 @@ unsafe fn mmap_fd<'a>(fd: i32) -> &'a [u8] {
 }
 
 unsafe fn mmap_fd_expand<'a>(fd: i32, size: usize) -> &'a mut [u8] {
-    let seek_end = 2;
     let result = ftruncate(fd, size as i64);
     if result == -1 {
         panic!("ftruncate failed, errno {}", std::io::Error::last_os_error().raw_os_error().unwrap());
@@ -362,7 +362,6 @@ unsafe fn mmap_fd_expand<'a>(fd: i32, size: usize) -> &'a mut [u8] {
     let prot_read = 0x01;
     let prot_write = 0x02;
     let map_shared = 0x01;
-    //sleep(std::time::Duration::from_millis(100000));
     let ptr = mmap(0 as _, size as usize, prot_read | prot_write, map_shared, fd, 0);
     if ptr as isize == -1 {
         panic!("mmap failed, errno {}", std::io::Error::last_os_error().raw_os_error().unwrap());
