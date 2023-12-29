@@ -11,3 +11,7 @@ rand = "0.8.5"
 
 [profile.release]
 debug = true
+
+[features]
+reopen_stdout = []
+default = ["reopen_stdout"]

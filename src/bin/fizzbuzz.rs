@@ -2,7 +2,7 @@ use std::io;
 //use std::io::{BufWriter, Write};
 use std::io::{Write};
 use std::convert::TryInto;
-use std::ffi::CStr;
+use std::ffi::{c_char, CStr};
 
 struct HugePageBufferedWriter<W: Write> {
     buffer: *mut u8,
@@ -231,7 +231,7 @@ extern {
     fn madvise(addr: *mut u8, length: usize, advice: i32) -> i32;
     fn lseek(fd: i32, offset: i64, whence: i32) -> i64;
     fn ftruncate(fd: i32, offset: i64) -> i32;
-    fn open(path: *const u8, oflag: i32) -> i32;
+    fn open(path: *const c_char, oflag: i32) -> i32;
     fn fcntl(fd: i32, cmd: i32, ...) -> i32;
     fn dup2(fd_src: i32, fd_dest: i32) -> i32;
     fn getpid() -> i32;
@@ -252,7 +252,7 @@ unsafe fn mmap_path<'a>(path: &str) -> &'a [u8] {
     let mut path2 = vec![];
     path2.extend_from_slice(path.as_bytes());
     path2.push(0);
-    let fd = open(path2.as_ptr(), 0);
+    let fd = open(path2.as_ptr() as *const c_char, 0);
     if fd == -1 {
         panic!("open failed, errno {}", std::io::Error::last_os_error().raw_os_error().unwrap());
     }
@@ -288,8 +288,8 @@ fn get_stdout_path(path_buf: &mut [u8; 4096]) {
         if result == -1 {
             panic!("fcntl failed, errno {}", std::io::Error::last_os_error().raw_os_error().unwrap());
         }
-        let path = CStr::from_ptr(path_buf.as_ptr() as *const i8);
-        eprintln!("here {}", path.to_str().unwrap());
+        let path = CStr::from_ptr(path_buf.as_ptr() as *const c_char);
+        //eprintln!("here {}", path.to_str().unwrap());
     }
 }
 #[cfg(target_os = "linux")]
@@ -303,11 +303,12 @@ fn get_stdout_path(path_buf: &mut [u8; 4096]) {
         path_buf[..bytes.len()].copy_from_slice(bytes);
         path_buf[bytes.len()] = 0;
 
-        let path = CStr::from_ptr(path_buf.as_ptr());
-        eprintln!("here {}", path.to_str().unwrap());
+        let path = CStr::from_ptr(path_buf.as_ptr() as *const c_char);
+        //eprintln!("here {}", path.to_str().unwrap());
     }
 }
 
+#[cfg(feature = "reopen_stdout")]
 fn reopen_stdout_rw() {
     let mut path_buf = [0u8; 4096];
     unsafe {
@@ -325,6 +326,11 @@ fn reopen_stdout_rw() {
         }
         assert!(fd_new == stdout);
     }
+}
+
+#[cfg(not(feature = "reopen_stdout"))]
+fn reopen_stdout_rw() {
+    // not necessary on the highload system?
 }
 
 unsafe fn mmap_fd<'a>(fd: i32) -> &'a [u8] {
