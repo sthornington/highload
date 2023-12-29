@@ -1,5 +1,161 @@
 use std::io;
 use std::io::{BufWriter, Write};
+use std::convert::TryInto;
+use std::ffi::CStr;
+use std::thread::sleep;
+
+struct HugePageBufferedWriter<W: Write> {
+    buffer: *mut u8,
+    capacity: usize,
+    position: usize,
+    inner: W
+}
+
+impl <W: Write> HugePageBufferedWriter<W>  {
+    fn new(writer: W) -> io::Result<HugePageBufferedWriter<W>> {
+        let size = 2 * 1024 * 1024;
+        let buffer = unsafe { mmap_huge_page(size) };
+
+        Ok(HugePageBufferedWriter {
+            buffer,
+            capacity: size,
+            position: 0,
+            inner: writer,
+        })
+    }
+
+    fn write_inner(&mut self) -> io::Result<()> {
+        unsafe {
+            self.inner.write_all(std::slice::from_raw_parts(self.buffer, self.position))?;
+        }
+        self.position = 0;
+
+        Ok(())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if self.position > 0 {
+            self.write_inner()?;
+            self.inner.flush()?;
+        }
+
+        Ok(())
+    }
+
+    #[inline]
+    fn write_hot(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let to_write = buf.len();
+        debug_assert!(to_write <= self.capacity - self.position);
+        unsafe {
+            std::ptr::copy_nonoverlapping(buf.as_ptr(), self.buffer.add(self.position), to_write);
+        }
+        self.position += to_write;
+        Ok(to_write)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn write_cold(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let space_left = self.capacity - self.position;
+        let to_write = buf.len();
+
+        if to_write > space_left {
+            self.write_inner()?;
+            debug_assert!(to_write <= space_left);
+        }
+        self.write_hot(buf)
+    }
+}
+
+impl <W: Write> Write for HugePageBufferedWriter<W> {
+    #[inline]
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let space_left = self.capacity - self.position;
+        let to_write = buf.len();
+
+        if to_write <= space_left {
+            self.write_hot(buf)
+        } else {
+            self.write_cold(buf)
+        }
+    }
+
+    #[inline]
+    fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
+        let space_left = self.capacity - self.position;
+        let to_write = buf.len();
+
+        let written = if to_write <= space_left {
+            self.write_hot(buf)
+        } else {
+            self.write_cold(buf)
+        }?;
+        debug_assert!(written == to_write);
+        Ok(())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.flush()
+    }
+}
+
+impl <W: Write> Drop for HugePageBufferedWriter<W> {
+    fn drop(&mut self) {
+        let _ = self.flush();
+    }
+}
+
+struct HugePageMMAPWriter {
+    buffer: *mut u8,
+    capacity: usize,
+    position: usize,
+    fd: i32,
+}
+
+impl HugePageMMAPWriter  {
+    fn new() -> io::Result<HugePageMMAPWriter> {
+        let mut buffer = unsafe { mmap_stdout() };
+
+        Ok(HugePageMMAPWriter {
+            buffer: buffer.as_mut_ptr(),
+            capacity: buffer.len(),
+            position: 0,
+            fd: 1,
+        })
+    }
+
+    #[inline]
+    fn write_hot(&mut self, buf: &[u8]) {
+        let to_write = buf.len();
+        debug_assert!(to_write <= self.capacity - self.position);
+        unsafe {
+            std::ptr::copy_nonoverlapping(buf.as_ptr(), self.buffer.add(self.position), to_write);
+        }
+        self.position += to_write;
+    }
+}
+
+impl Write for HugePageMMAPWriter {
+    #[inline]
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.write_hot(buf);
+        Ok(buf.len())
+    }
+
+    #[inline]
+    fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
+        self.write_hot(buf);
+        Ok(())
+    }
+
+    fn flush(&mut self) -> io::Result<()> { Ok(()) }
+}
+
+impl Drop for HugePageMMAPWriter {
+    fn drop(&mut self) {
+        unsafe { ftruncate(self.fd, self.position as i64); }
+    }
+}
 
 fn format_int(mut num: u32, buf: &mut [u8; 10]) -> &[u8] {
     let mut start = 0;
@@ -16,20 +172,20 @@ fn format_int(mut num: u32, buf: &mut [u8; 10]) -> &[u8] {
     &buf[start..10]
 }
 
-fn write_int(num: u32, writer: &mut BufWriter<io::StdoutLock>) {
+fn write_int(num: u32, writer: &mut impl Write) {
     let mut buf = [0u8; 10];
     let slice = format_int(num, &mut buf);
     writer.write_all(slice).unwrap();
 }
 
-// TODO - REPLACE ALL BufWriter WITH CUSTOM ALIGNED HUGE PAGE BUFFER
-
 fn main() -> io::Result<()> {
-    let buf = unsafe { mmap_stdin() };
+    let stdin_buf = unsafe { mmap_stdin() };
     let stdout = io::stdout();
-    let mut writer = BufWriter::with_capacity(128*1024, stdout.lock());
+    //let mut writer = BufWriter::with_capacity(128*1024, stdout.lock());
+    //let mut writer = HugePageBufferedWriter::new(stdout.lock()).unwrap();
+    let mut writer = HugePageMMAPWriter::new().unwrap();
 
-    for buffer in buf.chunks_exact(4).map(|x| x.try_into().unwrap()) {
+    for buffer in stdin_buf.chunks_exact(4).map(|x| x.try_into().unwrap()) {
         let num = u32::from_le_bytes(buffer);
         let fizz = num % 3 == 0;
         let buzz = num % 5 == 0;
@@ -74,7 +230,11 @@ extern {
     fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut u8;
     fn madvise(addr: *mut u8, length: usize, advice: i32) -> i32;
     fn lseek(fd: i32, offset: i64, whence: i32) -> i64;
+    fn ftruncate(fd: i32, offset: i64) -> i32;
     fn open(path: *const u8, oflag: i32) -> i32;
+    fn fcntl(fd: i32, cmd: i32, ...) -> i32;
+    fn dup2(fd_src: i32, fd_dest: i32) -> i32;
+    fn getpid() -> i32;
 }
 
 #[allow(dead_code)]
@@ -82,6 +242,11 @@ unsafe fn mmap_stdin<'a>() -> &'a [u8] {
     mmap_fd(0)
 }
 
+#[allow(dead_code)]
+unsafe fn mmap_stdout<'a>() -> &'a mut [u8] {
+    reopen_stdout_rw();
+    mmap_fd_expand(1, 1 << 30)
+}
 #[allow(dead_code)]
 unsafe fn mmap_path<'a>(path: &str) -> &'a [u8] {
     let mut path2 = vec![];
@@ -96,9 +261,70 @@ unsafe fn mmap_path<'a>(path: &str) -> &'a [u8] {
 
 #[cfg(target_os = "linux")]
 const MAP_POPULATE: i32 = 0x8000;
+#[cfg(target_os = "linux")]
+const MAP_ANONYMOUS: i32 = 0x20;
+#[cfg(target_os = "linux")]
+const MAP_HUGETLB: i32 = 0x040000;
+#[cfg(target_os = "linux")]
+const VM_FLAGS_SUPERPAGE_SIZE_2MB: i32 = -1;
 
 #[cfg(target_os = "macos")]
 const MAP_POPULATE: i32 = 0x0000;
+#[cfg(target_os = "macos")]
+const MAP_ANONYMOUS: i32 = 0x1000;
+#[cfg(target_os = "macos")]
+const MAP_HUGETLB: i32 = 0x0000;
+#[cfg(target_os = "macos")]
+// doesn't seem to work with mmap, maybe try mach_vm_alloc next time
+//const VM_FLAGS_SUPERPAGE_SIZE_2MB: i32 = 2 << 16;
+const VM_FLAGS_SUPERPAGE_SIZE_2MB: i32 = -1;
+
+#[cfg(target_os = "macos")]
+fn get_stdout_path(path_buf: &mut [u8; 4096]) {
+    unsafe {
+        let f_getpath = 50;
+        let stdout = 1;
+        let result = fcntl(stdout, f_getpath, path_buf.as_mut_ptr());
+        if result == -1 {
+            panic!("fcntl failed, errno {}", std::io::Error::last_os_error().raw_os_error().unwrap());
+        }
+        let path = CStr::from_ptr(path_buf.as_ptr() as *const i8);
+        eprintln!("here {}", path.to_str().unwrap());
+    }
+}
+#[cfg(target_os = "linux")]
+fn get_stdout_path(path_buf: &mut [u8; 4096]) {
+    unsafe {
+        let pid = getpid();
+        let stdout = 1;
+        let proc_path = format!("/proc/{}/fd/{}", pid, stdout);
+        let bytes = proc_path.as_bytes();
+        assert!(bytes.len() < path_buf.len());
+        path_buf[..bytes.len()].copy_from_slice(bytes);
+        path_buf[bytes.len()] = 0;
+
+        let path = CStr::from_ptr(path_buf.as_ptr() as *const i8);
+        eprintln!("here {}", path.to_str().unwrap());
+    }
+}
+
+fn reopen_stdout_rw() {
+    let mut path_buf = [0u8; 4096];
+    unsafe {
+        get_stdout_path(&mut path_buf);
+
+        let o_rdwr = 2;
+        let fd = open(path_buf.as_ptr(), o_rdwr);
+        if fd == -1 {
+            panic!("open failed, errno {}", std::io::Error::last_os_error().raw_os_error().unwrap());
+        }
+        let fd_new = dup2(fd, stdout);
+        if fd_new == -1 {
+            panic!("open failed, errno {}", std::io::Error::last_os_error().raw_os_error().unwrap());
+        }
+        assert!(fd_new == stdout);
+    }
+}
 
 unsafe fn mmap_fd<'a>(fd: i32) -> &'a [u8] {
     let seek_end = 2;
@@ -125,4 +351,56 @@ unsafe fn mmap_fd<'a>(fd: i32) -> &'a [u8] {
         panic!("madvise failed, errno {}", std::io::Error::last_os_error().raw_os_error().unwrap());
     }
     std::slice::from_raw_parts(ptr, size as usize)
+}
+
+unsafe fn mmap_fd_expand<'a>(fd: i32, size: usize) -> &'a mut [u8] {
+    let seek_end = 2;
+    let result = ftruncate(fd, size as i64);
+    if result == -1 {
+        panic!("ftruncate failed, errno {}", std::io::Error::last_os_error().raw_os_error().unwrap());
+    }
+    let prot_read = 0x01;
+    let prot_write = 0x02;
+    let map_shared = 0x01;
+    //sleep(std::time::Duration::from_millis(100000));
+    let ptr = mmap(0 as _, size as usize, prot_read | prot_write, map_shared, fd, 0);
+    if ptr as isize == -1 {
+        panic!("mmap failed, errno {}", std::io::Error::last_os_error().raw_os_error().unwrap());
+    }
+    let madv_sequential = 0x02;
+    let r = madvise(ptr, size as usize, madv_sequential);
+    if r == -1 {
+        panic!("madvise failed, errno {}", std::io::Error::last_os_error().raw_os_error().unwrap());
+    }
+    let madv_willneed = 0x03;
+    let r = madvise(ptr, size as usize, madv_willneed);
+    if r == -1 {
+        panic!("madvise failed, errno {}", std::io::Error::last_os_error().raw_os_error().unwrap());
+    }
+    std::slice::from_raw_parts_mut(ptr, size as usize)
+}
+
+unsafe fn mmap_huge_page(size: usize) -> *mut u8 {
+    let prot_read = 0x01;
+    let prot_write = 0x02;
+    let map_private = 0x02;
+    let map_anonymous = MAP_ANONYMOUS;
+    let map_populate = MAP_POPULATE;
+    let map_hugetlb = MAP_HUGETLB;
+    let vm_flags_superpage_size_2mb = VM_FLAGS_SUPERPAGE_SIZE_2MB;
+    let ptr = mmap(0 as _, size, prot_read | prot_write, map_private | map_anonymous | map_hugetlb | map_populate, vm_flags_superpage_size_2mb, 0);
+    if ptr as isize == -1 {
+        panic!("mmap failed, errno {}", std::io::Error::last_os_error().raw_os_error().unwrap());
+    }
+    let madv_sequential = 0x02;
+    let r = madvise(ptr, size as usize, madv_sequential);
+    if r == -1 {
+        panic!("madvise failed, errno {}", std::io::Error::last_os_error().raw_os_error().unwrap());
+    }
+    let madv_willneed = 0x03;
+    let r = madvise(ptr, size as usize, madv_willneed);
+    if r == -1 {
+        panic!("madvise failed, errno {}", std::io::Error::last_os_error().raw_os_error().unwrap());
+    }
+    ptr
 }
