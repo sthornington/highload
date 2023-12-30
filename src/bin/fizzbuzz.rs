@@ -108,7 +108,7 @@ impl <W: Write> Drop for HugePageBufferedWriter<W> {
 struct HugePageMMAPWriter {
     buffer: *mut u8,
     capacity: usize,
-    position: usize,
+    cursor: *mut u8,
     fd: i32,
 }
 
@@ -119,7 +119,7 @@ impl HugePageMMAPWriter  {
         Ok(HugePageMMAPWriter {
             buffer: buffer.as_mut_ptr(),
             capacity: buffer.len(),
-            position: 0,
+            cursor: buffer.as_mut_ptr(),
             fd: 1,
         })
     }
@@ -127,11 +127,11 @@ impl HugePageMMAPWriter  {
     #[inline]
     fn write_hot(&mut self, buf: &[u8]) {
         let to_write = buf.len();
-        debug_assert!(to_write <= self.capacity - self.position);
         unsafe {
-            std::ptr::copy_nonoverlapping(buf.as_ptr(), self.buffer.add(self.position), to_write);
+            debug_assert!(to_write <= (self.capacity - self.cursor.offset_from(self.buffer) as usize));
+            std::ptr::copy_nonoverlapping(buf.as_ptr(), self.cursor, to_write);
+            self.cursor = self.cursor.add(to_write);
         }
-        self.position += to_write;
     }
 }
 
@@ -153,10 +153,11 @@ impl Write for HugePageMMAPWriter {
 
 impl Drop for HugePageMMAPWriter {
     fn drop(&mut self) {
-        unsafe { ftruncate(self.fd, self.position as i64); }
+        unsafe { ftruncate(self.fd, self.cursor.offset_from(self.buffer) as i64); }
     }
 }
 
+#[inline]
 fn format_int(mut num: u32, buf: &mut [u8; 10]) -> &[u8] {
     let mut start = 0;
 
@@ -172,9 +173,9 @@ fn format_int(mut num: u32, buf: &mut [u8; 10]) -> &[u8] {
     &buf[start..10]
 }
 
-fn write_int(num: u32, writer: &mut impl Write) {
-    let mut buf = [0u8; 10];
-    let slice = format_int(num, &mut buf);
+#[inline]
+fn write_int(num: u32, buf: &mut [u8; 10], writer: &mut impl Write) {
+    let slice = format_int(num, buf);
     writer.write_all(slice).unwrap();
 }
 
@@ -184,6 +185,7 @@ fn main() -> io::Result<()> {
     //let mut writer = BufWriter::with_capacity(128*1024, stdout.lock());
     //let mut writer = HugePageBufferedWriter::new(stdout.lock()).unwrap();
     let mut writer = HugePageMMAPWriter::new().unwrap();
+    let mut buf = [0u8; 10];
 
     for buffer in stdin_buf.chunks_exact(4).map(|x| x.try_into().unwrap()) {
         let num = u32::from_le_bytes(buffer);
@@ -197,7 +199,7 @@ fn main() -> io::Result<()> {
             writer.write_all(b"Buzz").unwrap();
         }
         if !fizz & !buzz {
-            write_int(num, &mut writer);
+            write_int(num, &mut buf, &mut writer);
             //write!(writer, "{}", num).unwrap();
         }
 
@@ -245,7 +247,7 @@ unsafe fn mmap_stdin<'a>() -> &'a [u8] {
 #[allow(dead_code)]
 unsafe fn mmap_stdout<'a>() -> &'a mut [u8] {
     reopen_stdout_rw();
-    mmap_fd_expand(1, 1 << 30)
+    mmap_fd_expand(1, 1 << 29)
 }
 #[allow(dead_code)]
 unsafe fn mmap_path<'a>(path: &str) -> &'a [u8] {
