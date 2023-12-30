@@ -318,7 +318,7 @@ fn reopen_stdout_rw() {
         get_stdout_path(&mut path_buf);
 
         let o_rdwr = 2;
-        let fd = open(path_buf.as_ptr(), o_rdwr);
+        let fd = open(path_buf.as_ptr() as *const c_char, o_rdwr);
         if fd == -1 {
             panic!("open failed, errno {}", std::io::Error::last_os_error().raw_os_error().unwrap());
         }
