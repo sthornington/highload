@@ -158,25 +158,30 @@ impl Drop for HugePageMMAPWriter {
 }
 
 #[inline]
-fn format_int(mut num: u32, buf: &mut [u8; 10]) -> &[u8] {
+fn format_int(mut num: u32, buf: &mut [u8; 16]) -> usize {
     let mut start = 0;
 
     for (i, c) in buf.iter_mut().enumerate().rev() {
         let (d, r) = (num / 10, num % 10);
         *c = r as u8 + b'0';
         num = d;
-        if num == 0 {
+        if d == 0 {
             start = i;
             break;
         }
     }
-    &buf[start..10]
+    start
 }
 
 #[inline]
-fn write_int(num: u32, buf: &mut [u8; 10], writer: &mut impl Write) {
-    let slice = format_int(num, buf);
-    writer.write_all(slice).unwrap();
+fn write_int(num: u32, buf: &mut [u8; 16], writer: &mut impl Write) {
+    let start = format_int(num, buf);
+    writer.write_all(&buf[start..]).unwrap();
+}
+
+#[repr(align(128))]
+struct AlignedCharArray {
+    array: [u8; 16],
 }
 
 fn main() -> io::Result<()> {
@@ -185,10 +190,11 @@ fn main() -> io::Result<()> {
     //let mut writer = BufWriter::with_capacity(128*1024, stdout.lock());
     //let mut writer = HugePageBufferedWriter::new(stdout.lock()).unwrap();
     let mut writer = HugePageMMAPWriter::new().unwrap();
-    let mut buf = [0u8; 10];
+    let mut buf = AlignedCharArray { array: [0u8; 16] };
+    //let mut buf = [0u8; 10];
 
-    for buffer in stdin_buf.chunks_exact(4).map(|x| x.try_into().unwrap()) {
-        let num = u32::from_le_bytes(buffer);
+//    for num in stdin_buf.chunks_exact(4).map(|x| u32::from_le_bytes(x.try_into().unwrap())) {
+    for num in stdin_buf.chunks_exact(4).map(|x| u32::from_le_bytes(unsafe { *(x.as_ptr() as *const [u8; 4]) })) {
         let fizz = num % 3 == 0;
         let buzz = num % 5 == 0;
 
@@ -199,7 +205,7 @@ fn main() -> io::Result<()> {
             writer.write_all(b"Buzz").unwrap();
         }
         if !fizz & !buzz {
-            write_int(num, &mut buf, &mut writer);
+            write_int(num, &mut buf.array, &mut writer);
             //write!(writer, "{}", num).unwrap();
         }
 
@@ -211,7 +217,7 @@ fn main() -> io::Result<()> {
 
 #[test]
 fn test_format_int() {
-    let mut buf = [0u8; 10];
+    let mut buf = [0u8; 16];
     assert_eq!(format_int(0, &mut buf), b"0");
     assert_eq!(format_int(1, &mut buf), b"1");
     assert_eq!(format_int(10, &mut buf), b"10");
