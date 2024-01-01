@@ -158,7 +158,7 @@ impl Drop for HugePageMMAPWriter {
 }
 
 #[inline]
-fn format_int(mut num: u32, buf: &mut [u8; 16]) -> usize {
+fn format_int(mut num: u32, buf: &mut [u8; 16]) -> &[u8] {
     let mut start = 0;
 
     for (i, c) in buf.iter_mut().enumerate().rev() {
@@ -170,13 +170,12 @@ fn format_int(mut num: u32, buf: &mut [u8; 16]) -> usize {
             break;
         }
     }
-    start
+    &buf[start..]
 }
 
 #[inline]
 fn write_int(num: u32, buf: &mut [u8; 16], writer: &mut impl Write) {
-    let start = format_int(num, buf);
-    writer.write_all(&buf[start..]).unwrap();
+    writer.write_all(format_int(num, buf)).unwrap();
 }
 
 #[repr(align(128))]
