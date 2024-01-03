@@ -8,6 +8,8 @@ edition = "2021"
 [dependencies]
 libc = "*"
 rand = "0.8.5"
+#lexical = "^6.0"
+#lexical-core = { version = "0.8.5", features = [] }
 
 [profile.release]
 debug = true

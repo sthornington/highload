@@ -3,6 +3,7 @@ use std::io;
 use std::io::{Write};
 use std::convert::TryInto;
 use std::ffi::{c_char, CStr};
+//use lexical_core::*;
 
 struct HugePageBufferedWriter<W: Write> {
     buffer: *mut u8,
@@ -124,7 +125,7 @@ impl HugePageMMAPWriter  {
         })
     }
 
-    #[inline]
+    #[inline(always)]
     fn write_hot(&mut self, buf: &[u8]) {
         let to_write = buf.len();
         debug_assert!(to_write <= self.capacity - self.position);
@@ -132,6 +133,18 @@ impl HugePageMMAPWriter  {
             std::ptr::copy_nonoverlapping(buf.as_ptr(), self.buffer.add(self.position), to_write);
         }
         self.position += to_write;
+    }
+
+    #[inline]
+    fn rest(&mut self) -> &mut [u8] {
+        unsafe {
+            std::slice::from_raw_parts_mut(self.buffer.add(self.position), self.capacity - self.position)
+        }
+    }
+
+    #[inline]
+    fn advance(&mut self, written: usize) {
+        self.position += written;
     }
 }
 
@@ -157,25 +170,180 @@ impl Drop for HugePageMMAPWriter {
     }
 }
 
-fn format_int(mut num: u32, buf: &mut [u8; 10]) -> &[u8] {
-    let mut start = 0;
-
-    for (i, c) in buf.iter_mut().enumerate().rev() {
-        let (d, r) = (num / 10, num % 10);
-        *c = r as u8 + b'0';
-        num = d;
-        if num == 0 {
-            start = i;
-            break;
-        }
-    }
-    &buf[start..10]
+// all this stuff cribbed from lexical-core
+macro_rules! index_unchecked {
+    ($x:ident[$i:expr]) => {
+        *$x.get_unchecked($i)
+    };
 }
 
-fn write_int(num: u32, writer: &mut impl Write) {
-    let mut buf = [0u8; 10];
-    let slice = format_int(num, &mut buf);
-    writer.write_all(slice).unwrap();
+macro_rules! index_unchecked_mut {
+    ($x:ident[$i:expr]) => {
+        *$x.get_unchecked_mut($i)
+    };
+
+    ($x:ident[$i:expr] = $y:ident[$j:expr]) => {
+        *$x.get_unchecked_mut($i) = *$y.get_unchecked($j)
+    };
+}
+
+#[inline]
+pub fn fast_log2(x: u32) -> usize {
+    (u32::BITS - 1 - (x | 1u32).leading_zeros()) as usize
+}
+
+#[inline]
+pub fn fast_digit_count(x: u32) -> usize {
+    const TABLE: [u64; 32] = [
+        4294967296,
+        8589934582,
+        8589934582,
+        8589934582,
+        12884901788,
+        12884901788,
+        12884901788,
+        17179868184,
+        17179868184,
+        17179868184,
+        21474826480,
+        21474826480,
+        21474826480,
+        21474826480,
+        25769703776,
+        25769703776,
+        25769703776,
+        30063771072,
+        30063771072,
+        30063771072,
+        34349738368,
+        34349738368,
+        34349738368,
+        34349738368,
+        38554705664,
+        38554705664,
+        38554705664,
+        41949672960,
+        41949672960,
+        41949672960,
+        42949672960,
+        42949672960,
+    ];
+    // SAFETY: always safe, since fast_log2 will always return a value
+    // <= 32. This is because the range of values from `ctlz(x | 1)` is
+    // `[0, 31]`, so `32 - 1 - ctlz(x | 1)` must be in the range `[0, 31]`.
+    let shift = unsafe { index_unchecked!(TABLE[fast_log2(x)]) };
+    let count = (x as u64 + shift) >> 32;
+    count as usize
+}
+
+pub const DIGIT_TO_BASE10_SQUARED: [u8; 200] = [
+    b'0', b'0', b'0', b'1', b'0', b'2', b'0', b'3', b'0', b'4', b'0', b'5', b'0', b'6', b'0', b'7',
+    b'0', b'8', b'0', b'9', b'1', b'0', b'1', b'1', b'1', b'2', b'1', b'3', b'1', b'4', b'1', b'5',
+    b'1', b'6', b'1', b'7', b'1', b'8', b'1', b'9', b'2', b'0', b'2', b'1', b'2', b'2', b'2', b'3',
+    b'2', b'4', b'2', b'5', b'2', b'6', b'2', b'7', b'2', b'8', b'2', b'9', b'3', b'0', b'3', b'1',
+    b'3', b'2', b'3', b'3', b'3', b'4', b'3', b'5', b'3', b'6', b'3', b'7', b'3', b'8', b'3', b'9',
+    b'4', b'0', b'4', b'1', b'4', b'2', b'4', b'3', b'4', b'4', b'4', b'5', b'4', b'6', b'4', b'7',
+    b'4', b'8', b'4', b'9', b'5', b'0', b'5', b'1', b'5', b'2', b'5', b'3', b'5', b'4', b'5', b'5',
+    b'5', b'6', b'5', b'7', b'5', b'8', b'5', b'9', b'6', b'0', b'6', b'1', b'6', b'2', b'6', b'3',
+    b'6', b'4', b'6', b'5', b'6', b'6', b'6', b'7', b'6', b'8', b'6', b'9', b'7', b'0', b'7', b'1',
+    b'7', b'2', b'7', b'3', b'7', b'4', b'7', b'5', b'7', b'6', b'7', b'7', b'7', b'8', b'7', b'9',
+    b'8', b'0', b'8', b'1', b'8', b'2', b'8', b'3', b'8', b'4', b'8', b'5', b'8', b'6', b'8', b'7',
+    b'8', b'8', b'8', b'9', b'9', b'0', b'9', b'1', b'9', b'2', b'9', b'3', b'9', b'4', b'9', b'5',
+    b'9', b'6', b'9', b'7', b'9', b'8', b'9', b'9',
+];
+
+pub unsafe fn digit_to_char(digit: u32) -> u8 {
+    const TABLE: [u8; 36] = [
+        b'0', b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9', b'A', b'B', b'C', b'D', b'E',
+        b'F', b'G', b'H', b'I', b'J', b'K', b'L', b'M', b'N', b'O', b'P', b'Q', b'R', b'S', b'T',
+        b'U', b'V', b'W', b'X', b'Y', b'Z',
+    ];
+    unsafe { *TABLE.get_unchecked(digit as usize) }
+}
+
+macro_rules! write_digits {
+    ($bytes:ident, $index:ident, $table:ident, $r:ident) => {{
+        debug_assert!($index >= 2);
+        debug_assert!($bytes.len() >= 2);
+        debug_assert!($r + 1 < $table.len());
+        $index -= 1;
+        unsafe { index_unchecked_mut!($bytes[$index] = $table[$r + 1]) };
+        $index -= 1;
+        unsafe { index_unchecked_mut!($bytes[$index] = $table[$r]) };
+    }};
+}
+
+macro_rules! write_digit {
+    ($bytes:ident, $index:ident, $r:ident) => {{
+        debug_assert!($index >= 1);
+        debug_assert!($bytes.len() >= 1);
+        debug_assert!($r < 36);
+        $index -= 1;
+        unsafe { index_unchecked_mut!($bytes[$index]) = digit_to_char($r) };
+    }};
+}
+
+unsafe fn write_digits(
+    mut value: u32,
+    radix: u32,
+    table: &[u8],
+    buffer: &mut [u8],
+    mut index: usize,
+) -> usize {
+    // Pre-compute our powers of radix.
+    let radix2 = radix * radix;
+    let radix4 = radix2 * radix2;
+
+    // SAFETY: All of these are safe for the buffer writes as long as
+    // the buffer is large enough to hold `T::MAX` digits in radix `N`.
+
+    // Decode 4 digits at a time.
+    while value >= radix4 {
+        let r = value % radix4;
+        value /= radix4;
+        let r1 = (2u32 * (r / radix2)) as usize;
+        let r2 = (2u32 * (r % radix2)) as usize;
+
+        // SAFETY: This is always safe, since the table is 2*radix^2, and
+        // r1 and r2 must be in the range [0, 2*radix^2-1), since the maximum
+        // value of r is `radix4-1`, which must have a div and r
+        // in the range [0, radix^2-1).
+        write_digits!(buffer, index, table, r2);
+        write_digits!(buffer, index, table, r1);
+    }
+
+    // Decode 2 digits at a time.
+    while value >= radix2 {
+        let r = (2u32 * (value % radix2)) as usize;
+        value /= radix2;
+
+        // SAFETY: this is always safe, since the table is 2*radix^2, and
+        // r must be in the range [0, 2*radix^2-1).
+        write_digits!(buffer, index, table, r);
+    }
+
+    // Decode last 2 digits.
+    if value < radix {
+        // SAFETY: this is always safe, since value < radix, so it must be < 36.
+        let r = value;
+        write_digit!(buffer, index, r);
+    } else {
+        let r = (2u32 * value) as usize;
+        // SAFETY: this is always safe, since the table is 2*radix^2, and
+        // the value must <= radix^2, so rem must be in the range
+        // [0, 2*radix^2-1).
+        write_digits!(buffer, index, table, r);
+    }
+
+    index
+}
+
+#[inline]
+fn write_int(num: u32, buf: &mut [u8]) -> usize {
+    let count = fast_digit_count(num);
+    let into = &mut buf[..count];
+    unsafe { write_digits(num, 10, &DIGIT_TO_BASE10_SQUARED, into, into.len()) };
+    count
 }
 
 fn main() -> io::Result<()> {
@@ -184,32 +352,40 @@ fn main() -> io::Result<()> {
     //let mut writer = BufWriter::with_capacity(128*1024, stdout.lock());
     //let mut writer = HugePageBufferedWriter::new(stdout.lock()).unwrap();
     let mut writer = HugePageMMAPWriter::new().unwrap();
+    //let mut buf = [0u8; 10];
 
-    for buffer in stdin_buf.chunks_exact(4).map(|x| x.try_into().unwrap()) {
-        let num = u32::from_le_bytes(buffer);
-        let fizz = num % 3 == 0;
-        let buzz = num % 5 == 0;
-
+    for num in stdin_buf.chunks_exact(4).map(|x| u32::from_le_bytes(x.try_into().unwrap())) {
+//    for num in stdin_buf.chunks_exact(4).map(|x| u32::from_le_bytes(unsafe { *(x.as_ptr() as *const [u8; 4]) })) {
+        let (fizz, buzz) = (num % 3 == 0, num % 5 == 0);
         if fizz {
-            writer.write_all(b"Fizz").unwrap();
+            let _ = writer.write_all(b"Fizz");
         }
         if buzz {
-            writer.write_all(b"Buzz").unwrap();
+            let _ = writer.write_all(b"Buzz");
         }
-        if !fizz & !buzz {
-            write_int(num, &mut writer);
-            //write!(writer, "{}", num).unwrap();
-        }
+        if !(fizz | buzz) {
+            let written = write_int(num, writer.rest());
+            //let written = lexical_core::write(3, writer.rest()).len();
+            writer.advance(written);
 
-        writer.write_all(b"\n").unwrap();
+        }
+        let _ = writer.write_all(b"\n");
     }
 
     Ok(())
 }
 
+#[inline]
+fn format_int(num: u32, buf: &mut [u8]) -> &[u8] {
+    let count = write_int(num, buf);
+    &buf[..count]
+}
+
 #[test]
 fn test_format_int() {
-    let mut buf = [0u8; 10];
+
+
+    let mut buf = [0u8; 16];
     assert_eq!(format_int(0, &mut buf), b"0");
     assert_eq!(format_int(1, &mut buf), b"1");
     assert_eq!(format_int(10, &mut buf), b"10");
